@@ -1,0 +1,23 @@
+{
+  "name": "Smash Legends",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/shared"
+      }
+    },
+    "ServerScriptService": {
+      "SmashServer": {
+        "$path": "src/server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "SmashClient": {
+          "$path": "src/client"
+        }
+      }
+    }
+  }
+}
