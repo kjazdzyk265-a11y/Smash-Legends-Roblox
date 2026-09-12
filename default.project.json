@@ -8,15 +8,11 @@
       }
     },
     "ServerScriptService": {
-      "SmashServer": {
-        "$path": "src/server"
-      }
+      "$path": "src/server"
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "SmashClient": {
-          "$path": "src/client"
-        }
+        "$path": "src/client"
       }
     }
   }
