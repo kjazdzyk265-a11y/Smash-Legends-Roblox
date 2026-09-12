@@ -42,9 +42,11 @@ local function petMultiplier(d)
 	return math.clamp(mult,1,500)
 end
 local function applyMultipliers(plr,d)
+	local currentZone=math.clamp(tonumber(plr:GetAttribute("UnlockedZone")) or 1,1,5)
+	d.Zone=math.max(d.Zone,currentZone)
 	plr:SetAttribute("PetMultiplier",petMultiplier(d))
 	plr:SetAttribute("RebirthMultiplier",1+d.Rebirths*Config.RebirthPowerPerLevel)
-	plr:SetAttribute("UnlockedZone",d.Zone)
+	if currentZone~=d.Zone then plr:SetAttribute("UnlockedZone",d.Zone) end
 end
 local function sync(plr)
 	local d=data[plr]; if not d then return end
@@ -114,6 +116,19 @@ local function setup(plr)
 	plr:GetAttributeChangedSignal("CoreStrength"):Connect(function()
 		progressQuest(plr,"Strength",plr:GetAttribute("CoreStrength") or 0,true)
 	end)
+	plr:GetAttributeChangedSignal("UnlockedZone"):Connect(function()
+		local d=data[plr]; if not d then return end
+		local z=math.clamp(tonumber(plr:GetAttribute("UnlockedZone")) or 1,1,5)
+		if z>d.Zone then d.Zone=z; progressQuest(plr,"Zone",z,true); sync(plr) end
+	end)
+	plr:GetAttributeChangedSignal("EventGemCredit"):Connect(function()
+		local d=data[plr]; if not d then return end
+		local credit=math.max(0,math.floor(tonumber(plr:GetAttribute("EventGemCredit")) or 0))
+		if credit>0 then
+			plr:SetAttribute("EventGemCredit",0); d.Gems+=credit
+			notice:FireClient(plr,"GIANT EVENT REWARD! +"..credit.." GEMS"); sync(plr)
+		end
+	end)
 	plr.CharacterAdded:Connect(function()
 		task.wait(1.2)
 		local toolIndex=plr:GetAttribute("CoreTool") or 1
@@ -137,12 +152,12 @@ action.OnServerEvent:Connect(function(plr,verb,arg,timing)
 		end
 		if type(timing)=="number" and math.abs(timing)<=Config.PerfectWindow then progressQuest(plr,"Perfect",1,false) end
 	elseif verb=="Hatch" then
-		local egg=Pets.Eggs[arg]
-		if not egg or d.Zone<egg.Zone then notice:FireClient(plr,"THIS EGG IS LOCKED") return end
+		local egg=Pets.Eggs[arg]; local zone=math.max(d.Zone,tonumber(plr:GetAttribute("UnlockedZone")) or 1)
+		if not egg or zone<egg.Zone then notice:FireClient(plr,"THIS EGG IS LOCKED") return end
 		state:FireClient(plr,"HatchRequest",{Egg=arg,Price=egg.Price})
 	elseif verb=="ConfirmHatch" then
-		local egg=Pets.Eggs[arg]
-		if not egg or d.Zone<egg.Zone then return end
+		local egg=Pets.Eggs[arg]; local zone=math.max(d.Zone,tonumber(plr:GetAttribute("UnlockedZone")) or 1)
+		if not egg or zone<egg.Zone then return end
 		local creditName="HatchCredit_"..arg
 		local credits=plr:GetAttribute(creditName) or 0
 		if credits<1 then notice:FireClient(plr,"EGG PAYMENT WAS NOT APPROVED") return end
@@ -152,24 +167,19 @@ action.OnServerEvent:Connect(function(plr,verb,arg,timing)
 		if #d.Equipped<Config.MaxEquippedPets then table.insert(d.Equipped,#d.Pets) end
 		progressQuest(plr,"Hatch",1,false)
 		state:FireClient(plr,"HatchResult",pet); sync(plr)
-	elseif verb=="EquipBest" then
-		equipBest(d); sync(plr)
-	elseif verb=="FusePet" and type(arg)=="number" then
-		fuse(plr,math.floor(arg))
+	elseif verb=="EquipBest" then equipBest(d); sync(plr)
+	elseif verb=="FusePet" and type(arg)=="number" then fuse(plr,math.floor(arg))
 	elseif verb=="ClaimQuest" and type(arg)=="string" then
 		local q=Quests.get(arg); local qs=q and d.Quests[q.Id]
 		if q and qs and not qs.Claimed and (qs.Progress or 0)>=q.Goal then
 			qs.Claimed=true; d.Gems+=q.RewardGems or 0
-			notice:FireClient(plr,"QUEST COMPLETE! +"..tostring(q.RewardGems or 0).." GEMS")
-			sync(plr)
+			notice:FireClient(plr,"QUEST COMPLETE! +"..tostring(q.RewardGems or 0).." GEMS"); sync(plr)
 		end
 	elseif verb=="Rebirth" then
 		local strength=plr:GetAttribute("CoreStrength") or 0
 		if strength>=Config.RebirthStrength then
-			d.Rebirths+=1; d.Gems+=Config.RebirthBaseGems+d.Rebirths
-			applyMultipliers(plr,d)
-			notice:FireClient(plr,"REBIRTH! PERMANENT POWER +25%")
-			sync(plr)
+			d.Rebirths+=1; d.Gems+=Config.RebirthBaseGems+d.Rebirths; applyMultipliers(plr,d)
+			notice:FireClient(plr,"REBIRTH! PERMANENT POWER +25%"); sync(plr)
 		else notice:FireClient(plr,"YOU NEED 25K STRENGTH TO REBIRTH") end
 	elseif verb=="ZoneUnlocked" and type(arg)=="number" then
 		d.Zone=math.max(d.Zone,math.clamp(math.floor(arg),1,5)); progressQuest(plr,"Zone",d.Zone,true); sync(plr)
