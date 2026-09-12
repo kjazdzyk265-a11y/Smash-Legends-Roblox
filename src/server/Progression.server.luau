@@ -4,15 +4,16 @@ local DataStoreService=game:GetService("DataStoreService")
 local Pets=require(ReplicatedStorage.Shared.Pets)
 local ToolVisuals=require(ReplicatedStorage.Shared.ToolVisuals)
 local Config=require(ReplicatedStorage.Shared.Config)
+local Quests=require(ReplicatedStorage.Shared.Quests)
 local net=ReplicatedStorage:WaitForChild("SmashNet")
 local action=net:WaitForChild("Action")
 local state=net:WaitForChild("State")
 local notice=net:WaitForChild("Notice")
-local store=DataStoreService:GetDataStore("SmashLegends_V3")
+local store=DataStoreService:GetDataStore("SmashLegends_V4")
 local data={}
 
 local function cloneDefaults()
-	return {Gems=0,Rebirths=0,Zone=1,Pets={},Equipped={},Hatches=0,Index={Pets={},Tools={}}}
+	return {Gems=0,Rebirths=0,Zone=1,Pets={},Equipped={},Hatches=0,Index={Pets={},Tools={}},Quests=Quests.makeState()}
 end
 local function sanitize(loaded)
 	local d=cloneDefaults()
@@ -22,6 +23,8 @@ local function sanitize(loaded)
 	d.Index=type(d.Index)=="table" and d.Index or {Pets={},Tools={}}
 	d.Index.Pets=type(d.Index.Pets)=="table" and d.Index.Pets or {}
 	d.Index.Tools=type(d.Index.Tools)=="table" and d.Index.Tools or {}
+	d.Quests=type(d.Quests)=="table" and d.Quests or Quests.makeState()
+	for id,default in pairs(Quests.makeState()) do if type(d.Quests[id])~="table" then d.Quests[id]=default end end
 	d.Zone=math.clamp(tonumber(d.Zone) or 1,1,5)
 	d.Rebirths=math.max(0,math.floor(tonumber(d.Rebirths) or 0))
 	d.Gems=math.max(0,math.floor(tonumber(d.Gems) or 0))
@@ -47,6 +50,21 @@ local function sync(plr)
 	local d=data[plr]; if not d then return end
 	applyMultipliers(plr,d)
 	state:FireClient(plr,"Progression",d)
+end
+local function progressQuest(plr,kind,amount,absolute)
+	local d=data[plr]; if not d then return end
+	local changed=false
+	for _,q in ipairs(Quests.List) do
+		if q.Kind==kind then
+			local qs=d.Quests[q.Id]
+			if qs and not qs.Claimed then
+				local nextValue=absolute and amount or ((qs.Progress or 0)+amount)
+				nextValue=math.min(q.Goal,nextValue)
+				if nextValue~=(qs.Progress or 0) then qs.Progress=nextValue; changed=true end
+			end
+		end
+	end
+	if changed then sync(plr) end
 end
 local function equipBest(d)
 	local order={}
@@ -74,18 +92,13 @@ local function fuse(plr,petIndex)
 	local tier=source.Tier or "Normal"
 	if tier=="Rainbow" then notice:FireClient(plr,"RAINBOW PETS CANNOT BE FUSED FURTHER") return end
 	local matches={}
-	for i,p in ipairs(d.Pets) do
-		if p.Name==source.Name and (p.Tier or "Normal")==tier then table.insert(matches,i) end
-	end
+	for i,p in ipairs(d.Pets) do if p.Name==source.Name and (p.Tier or "Normal")==tier then table.insert(matches,i) end end
 	if #matches<Config.FusionCount then notice:FireClient(plr,"YOU NEED 5 MATCHING PETS") return end
 	local nextTier=tier=="Normal" and "Shiny" or "Rainbow"
 	local boost=nextTier=="Shiny" and 2 or 2.5
-	local newPet=table.clone(source)
-	newPet.Tier=nextTier
-	newPet.Power=math.floor((tonumber(source.Power) or 1)*boost*100)/100
-	for i=#matches,1,-1 do if i>#matches-Config.FusionCount then table.remove(d.Pets,matches[i]) end end
-	table.insert(d.Pets,newPet)
-	d.Index.Pets[newPet.Name..":"..nextTier]=true
+	local newPet=table.clone(source); newPet.Tier=nextTier; newPet.Power=math.floor((tonumber(source.Power) or 1)*boost*100)/100
+	for i=#matches,#matches-Config.FusionCount+1,-1 do table.remove(d.Pets,matches[i]) end
+	table.insert(d.Pets,newPet); d.Index.Pets[newPet.Name..":"..nextTier]=true
 	equipBest(d)
 	notice:FireClient(plr,nextTier:upper().." "..newPet.Name:upper().." CREATED!")
 	sync(plr)
@@ -97,6 +110,10 @@ local function setup(plr)
 	pcall(function() loaded=store:GetAsync("u"..plr.UserId) end)
 	data[plr]=sanitize(loaded)
 	applyMultipliers(plr,data[plr])
+	progressQuest(plr,"Zone",data[plr].Zone,true)
+	plr:GetAttributeChangedSignal("CoreStrength"):Connect(function()
+		progressQuest(plr,"Strength",plr:GetAttribute("CoreStrength") or 0,true)
+	end)
 	plr.CharacterAdded:Connect(function()
 		task.wait(1.2)
 		local toolIndex=plr:GetAttribute("CoreTool") or 1
@@ -109,9 +126,17 @@ for _,plr in ipairs(Players:GetPlayers()) do task.spawn(setup,plr) end
 Players.PlayerRemoving:Connect(function(plr) save(plr); data[plr]=nil end)
 game:BindToClose(function() for _,p in ipairs(Players:GetPlayers()) do save(p) end end)
 
-action.OnServerEvent:Connect(function(plr,verb,arg)
+action.OnServerEvent:Connect(function(plr,verb,arg,timing)
 	local d=data[plr]; if not d then return end
-	if verb=="Hatch" then
+	if verb=="Hit" then
+		if typeof(arg)=="Instance" and arg:GetAttribute("Breakable") then
+			local before=tonumber(arg:GetAttribute("HP")) or 0
+			task.defer(function()
+				if data[plr] and before>0 and (tonumber(arg:GetAttribute("HP")) or 1)<=0 then progressQuest(plr,"Smash",1,false) end
+			end)
+		end
+		if type(timing)=="number" and math.abs(timing)<=Config.PerfectWindow then progressQuest(plr,"Perfect",1,false) end
+	elseif verb=="Hatch" then
 		local egg=Pets.Eggs[arg]
 		if not egg or d.Zone<egg.Zone then notice:FireClient(plr,"THIS EGG IS LOCKED") return end
 		state:FireClient(plr,"HatchRequest",{Egg=arg,Price=egg.Price})
@@ -125,11 +150,19 @@ action.OnServerEvent:Connect(function(plr,verb,arg)
 		local pet=Pets.roll(arg); pet.Tier="Normal"
 		table.insert(d.Pets,pet); d.Hatches+=1; d.Index.Pets[pet.Name..":Normal"]=true
 		if #d.Equipped<Config.MaxEquippedPets then table.insert(d.Equipped,#d.Pets) end
+		progressQuest(plr,"Hatch",1,false)
 		state:FireClient(plr,"HatchResult",pet); sync(plr)
 	elseif verb=="EquipBest" then
 		equipBest(d); sync(plr)
 	elseif verb=="FusePet" and type(arg)=="number" then
 		fuse(plr,math.floor(arg))
+	elseif verb=="ClaimQuest" and type(arg)=="string" then
+		local q=Quests.get(arg); local qs=q and d.Quests[q.Id]
+		if q and qs and not qs.Claimed and (qs.Progress or 0)>=q.Goal then
+			qs.Claimed=true; d.Gems+=q.RewardGems or 0
+			notice:FireClient(plr,"QUEST COMPLETE! +"..tostring(q.RewardGems or 0).." GEMS")
+			sync(plr)
+		end
 	elseif verb=="Rebirth" then
 		local strength=plr:GetAttribute("CoreStrength") or 0
 		if strength>=Config.RebirthStrength then
@@ -139,7 +172,7 @@ action.OnServerEvent:Connect(function(plr,verb,arg)
 			sync(plr)
 		else notice:FireClient(plr,"YOU NEED 25K STRENGTH TO REBIRTH") end
 	elseif verb=="ZoneUnlocked" and type(arg)=="number" then
-		d.Zone=math.max(d.Zone,math.clamp(math.floor(arg),1,5)); sync(plr)
+		d.Zone=math.max(d.Zone,math.clamp(math.floor(arg),1,5)); progressQuest(plr,"Zone",d.Zone,true); sync(plr)
 	elseif verb=="EquipHammerVisual" and type(arg)=="number" then
 		local index=math.clamp(math.floor(arg),1,#Config.Tools); equipHammer(plr,index); recordTool(plr,index); sync(plr)
 	end
